@@ -211,7 +211,7 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
     def is_empty(self):
         with self.env.begin(write=False, buffers=True) as txn:
             for hashtable_db in self.hashtable_dbs:
-                if txn.stat(hashtable_db).entries > 0:
+                if txn.stat(hashtable_db)['entries'] > 0:
                     return False
         return True
 
