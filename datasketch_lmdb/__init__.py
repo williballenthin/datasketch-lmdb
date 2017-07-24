@@ -9,21 +9,6 @@ import datasketch.lsh
 logger = logging.getLogger(__name__)
 
 
-def format_minhash(m):
-    '''
-    Format a :class:`datasketch.minhash.MinHash` into a nice string.
-    For example::
-
-        >>> format_minhash(minhash)
-        "minhash(len: 128, vals: [3749336, 339931219, ... (128 total)])"
-    '''
-    return 'minhash(len: %d, vals: [%d, %d, ... (%d total)])' % (
-        len(m.hashvalues),
-        m.hashvalues[0],
-        m.hashvalues[1],
-        len(m.hashvalues))
-    
-
 class LMDBMinHashLSH(datasketch.MinHashLSH):
     '''
     MinHash LSH indexed backed by LMDB.
@@ -72,16 +57,6 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
         # type: List[Mapping[bytes, List[Key]]]
         self.hashtable_dbs = [self.env.open_db(('hashtable_%d' % (i)).encode('ascii')) for i in range(self.b)]
 
-        logger.debug('threshold: %0.2f, num_perm: %d, weights: (%0.2f, %0.2f)', threshold, num_perm, *weights)
-        logger.debug('b: %d, r: %d', self.b, self.r)
-        logger.debug('hashtables: [{}, {}, ... (%d total)]', self.b)
-        logger.debug('hashranges:')
-        logger.debug('  (%d, %d)', *self.hashranges[0])
-        logger.debug('  (%d, %d)', *self.hashranges[1])
-        logger.debug('  ... (%d total)', self.b)
-        logger.debug('  (%d, %d)', *self.hashranges[-1])
-        logger.debug('keys: {}') 
-
     def close(self):
         '''
         Close the handle to the underlying LMDB database.
@@ -108,20 +83,11 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
         if len(minhash) != self.h:
             raise ValueError("Expecting minhash with length %d, got %d" % (self.h, len(minhash)))
 
-        logger.debug('insert %s -> %s', key, format_minhash(minhash))
-
         bkey = msgpack.packb(key)
         with self.env.begin(write=True, buffers=True) as txn:
             bhashes = txn.get(bkey, db=self.keys_db)
             if bhashes is not None:
                 raise ValueError("The given key already exists")
-
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('setting keys["%s"] -> [%s, %s, ... (%d total)]',
-                             key,
-                             self._H(minhash.hashvalues[self.hashranges[0][0]:self.hashranges[0][1]]).encode('hex'),
-                             self._H(minhash.hashvalues[self.hashranges[1][0]:self.hashranges[1][1]]).encode('hex'),
-                             len(self.hashranges))
 
             # keys[key] = [self._H(minhash.hashvalues[start:end]) for start, end in self.hashranges]
             hashes = [self._H(minhash.hashvalues[start:end]) for start, end in self.hashranges]
@@ -139,14 +105,10 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
                 bkeys = msgpack.packb(keys)
                 txn.put(H, bkeys, overwrite=True, db=hashtable_db)
 
-                logger.debug('hashtable-%d[%s] append "%s", now: %s', i, H.encode('hex'), key, keys)
-
     # override
     def query(self, minhash):
         if len(minhash) != self.h:
             raise ValueError("Expecting minhash with length %d, got %d" % (self.h, len(minhash)))
-
-        logger.debug('query %s', format_minhash(minhash))
 
         candidates = set()
         with self.env.begin(write=False, buffers=True) as txn:
@@ -157,12 +119,6 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
                     keys = msgpack.unpackb(bkeys)
                     for key in keys: 
                         candidates.add(key)
-
-                    logger.debug('query stripe (start: %d, end %d) using hashtable-%d for hash %s, candidates: %s',
-                                 start, end, i, H.encode('hex'), keys)
-                else:
-                    logger.debug('query stripe (start: %d, end %d) using hashtable-%d for hash %s, no hits',
-                                start, end, i, H.encode('hex'))
 
             return candidates
 
