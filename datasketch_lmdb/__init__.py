@@ -1,8 +1,4 @@
-import os
-import shutil
 import logging
-import contextlib
-from collections import defaultdict
 
 import lmdb
 import msgpack
@@ -14,12 +10,18 @@ logger = logging.getLogger(__name__)
 
 
 def format_minhash(m):
+    '''
+    Format a :class:`datasketch.minhash.MinHash` into a nice string.
+    For example::
+
+        >>> format_minhash(minhash)
+        "minhash(len: 128, vals: [3749336, 339931219, ... (128 total)])"
+    '''
     return 'minhash(len: %d, vals: [%d, %d, ... (%d total)])' % (
         len(m.hashvalues),
         m.hashvalues[0],
         m.hashvalues[1],
-        len(m.hashvalues),
-    )
+        len(m.hashvalues))
     
 
 class LMDBMinHashLSH(datasketch.MinHashLSH):
@@ -27,6 +29,7 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
     MinHash LSH indexed backed by LMDB.
     
     You must close this object once you're done with it.
+    See :ref:`LMDBMinHashLSH.close`.
     For example::
     
         lsh = LMDBMinHashLSH(path='lsh.bin', threshold=0.5, num_perm=128)
@@ -42,31 +45,19 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
 
     see: :ref:`datasketch.lsh.MinHashLSH`.
     '''
-    def __init__(self, path=None, threshold=0.9, num_perm=128, weights=(0.5,0.5), params=None):
-        if not path:
-            raise ValueError('path required.')
+    def __init__(self, path, threshold=0.9, num_perm=128, weights=(0.5,0.5), params=None):
         super(LMDBMinHashLSH, self).__init__(threshold=threshold, num_perm=num_perm, weights=weights, params=params)
 
+        # cleanup members from parent class.
         del self.hashtables
-        del self.hashranges
         del self.keys
 
         # no need to persist.
         # immutable.
         # type: List[Tuple[int, int]]
-        self.hashranges = tuple((i*self.r, (i+1)*self.r) for i in range(self.b))
+        self.hashranges  # expected nop, constructed by parent.
 
-        logger.debug('threshold: %0.2f, num_perm: %d, weights: (%0.2f, %0.2f)', threshold, num_perm, *weights)
-        logger.debug('b: %d, r: %d', self.b, self.r)
-        logger.debug('hashtables: [{}, {}, ... (%d total)]', self.b)
-        logger.debug('hashranges:')
-        logger.debug('  (%d, %d)', *self.hashranges[0])
-        logger.debug('  (%d, %d)', *self.hashranges[1])
-        logger.debug('  ... (%d total)', self.b)
-        logger.debug('  (%d, %d)', *self.hashranges[-1])
-        logger.debug('keys: {}') 
-
-        db_count = self.b + 1
+        db_count = self.b + 1  # b * hashtable_dbs + 1 * key_db
         self.env = lmdb.open(path, max_dbs=db_count)
 
         # database 0.
@@ -79,7 +70,35 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
         # type: List[Mapping[bytes, List[Key]]]
         self.hashtable_dbs = [self.env.open_db(('hashtable_%d' % (i)).encode('ascii')) for i in range(self.b)]
 
+        logger.debug('threshold: %0.2f, num_perm: %d, weights: (%0.2f, %0.2f)', threshold, num_perm, *weights)
+        logger.debug('b: %d, r: %d', self.b, self.r)
+        logger.debug('hashtables: [{}, {}, ... (%d total)]', self.b)
+        logger.debug('hashranges:')
+        logger.debug('  (%d, %d)', *self.hashranges[0])
+        logger.debug('  (%d, %d)', *self.hashranges[1])
+        logger.debug('  ... (%d total)', self.b)
+        logger.debug('  (%d, %d)', *self.hashranges[-1])
+        logger.debug('keys: {}') 
+
     def close(self):
+        '''
+        Close the handle to the underlying LMDB database.
+        This instance is not longer valid after calling `.close`.
+ 
+        You *must* close this object once you're done with it.
+        For example::
+
+            lsh = LMDBMinHashLSH(path='lsh.bin', threshold=0.5, num_perm=128)
+            ...
+            lsh.close()
+
+        Or more safely::
+
+            import contextlib
+            with contextlib.closing(LMDBMinHashLSH(path='lsh.bin', threshold=0.5, num_perm=128)) as lsh:
+                ...
+                lsh.insert("m2", m2)
+        '''
         self.env.close()
 
     # override
@@ -87,20 +106,20 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
         if len(minhash) != self.h:
             raise ValueError("Expecting minhash with length %d, got %d" % (self.h, len(minhash)))
 
-        bkey = msgpack.packb(key)
+        logger.debug('insert %s -> %s', key, format_minhash(minhash))
 
+        bkey = msgpack.packb(key)
         with self.env.begin(write=True, buffers=True) as txn:
             bhashes = txn.get(bkey, db=self.keys_db)
             if bhashes is not None:
                 raise ValueError("The given key already exists")
 
-            logger.debug('insert %s -> %s', key, format_minhash(minhash))
-
-            logger.debug('setting keys["%s"] -> [%s, %s, ... (%d total)]',
-                        key,
-                        self._H(minhash.hashvalues[self.hashranges[0][0]:self.hashranges[0][1]]).encode('hex'),
-                        self._H(minhash.hashvalues[self.hashranges[1][0]:self.hashranges[1][1]]).encode('hex'),
-                        len(self.hashranges))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('setting keys["%s"] -> [%s, %s, ... (%d total)]',
+                             key,
+                             self._H(minhash.hashvalues[self.hashranges[0][0]:self.hashranges[0][1]]).encode('hex'),
+                             self._H(minhash.hashvalues[self.hashranges[1][0]:self.hashranges[1][1]]).encode('hex'),
+                             len(self.hashranges))
 
             # keys[key] = [self._H(minhash.hashvalues[start:end]) for start, end in self.hashranges]
             hashes = [self._H(minhash.hashvalues[start:end]) for start, end in self.hashranges]
@@ -118,7 +137,7 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
                 bkeys = msgpack.packb(keys)
                 txn.put(H, bkeys, overwrite=True, db=hashtable_db)
 
-                logger.debug('hashtable-%d[%s] append "%s", now: %s', i, H.encode('hex'), key, str(keys))
+                logger.debug('hashtable-%d[%s] append "%s", now: %s', i, H.encode('hex'), key, keys)
 
     # override
     def query(self, minhash):
@@ -138,7 +157,7 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
                         candidates.add(key)
 
                     logger.debug('query stripe (start: %d, end %d) using hashtable-%d for hash %s, candidates: %s',
-                                 start, end, i, H.encode('hex'), str(keys))
+                                 start, end, i, H.encode('hex'), keys)
                 else:
                     logger.debug('query stripe (start: %d, end %d) using hashtable-%d for hash %s, no hits',
                                 start, end, i, H.encode('hex'))
@@ -193,6 +212,8 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
 
 
 if __name__ == '__main__':
+    import shutil
+    import contextlib
     logging.basicConfig(level=logging.DEBUG)
 
     set1 = set(['minhash', 'is', 'a', 'probabilistic', 'data', 'structure', 'for',
@@ -212,19 +233,32 @@ if __name__ == '__main__':
     for d in set3:
         m3.update(d.encode('utf8'))
 
+    minhashes = {
+        'm1': m1,
+        'm2': m2,
+        'm3': m3,
+    }
+
     with contextlib.closing(LMDBMinHashLSH(path='lsh.bin', threshold=0.5, num_perm=128)) as lsh:
         lsh.insert("m2", m2)
         lsh.insert("m3", m3)
-        result = lsh.query(m1)
-        print("Approximate neighbours with Jaccard similarity > 0.5", result)
+        results = lsh.query(m1)
+        print("Approximate neighbours with Jaccard similarity > 0.5", results)
+        for result in results:
+            print('  - %s: %0.2f' % (result, m1.jaccard(minhashes[result])))
+ 
         lsh.remove("m3")
-        result = lsh.query(m1)
-        print("Approximate neighbours with Jaccard similarity > 0.5", result)
+        results = lsh.query(m1)
+        print("Approximate neighbours with Jaccard similarity > 0.5", results)
+        for result in results:
+            print('  - %s: %0.2f' % (result, m1.jaccard(minhashes[result])))
     shutil.rmtree('lsh.bin')
 
-    #with contextlib.closing(LMDBMinHashLSH(threshold=0.7, num_perm=128)) as lsh:
-    #    lsh.insert("m2", m2)
-    #    lsh.insert("m3", m3)
-    #    result = lsh.query(m1)
-    #    print("Approximate neighbours with Jaccard similarity > 0.7", result)
-    #os.remove('lsh.bin')
+    with contextlib.closing(LMDBMinHashLSH(path='lsh.bin', threshold=0.7, num_perm=128)) as lsh:
+        lsh.insert("m2", m2)
+        lsh.insert("m3", m3)
+        results = lsh.query(m1)
+        print("Approximate neighbours with Jaccard similarity > 0.7", results)
+        for result in results:
+            print('  - %s: %0.2f' % (result, m1.jaccard(minhashes[result])))
+    shutil.rmtree('lsh.bin')
