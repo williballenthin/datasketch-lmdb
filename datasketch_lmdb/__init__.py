@@ -42,6 +42,8 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
         with contextlib.closing(LMDBMinHashLSH(path='lsh.bin', threshold=0.5, num_perm=128)) as lsh:
             ...
             lsh.insert("m2", m2)
+    
+    Note, you may not pickle this type of LSH, since it maintains a handle to a persistent database.
 
     see: :ref:`datasketch.lsh.MinHashLSH`.
     '''
@@ -163,6 +165,13 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
                                 start, end, i, H.encode('hex'))
 
             return candidates
+
+    # override
+    def __contains__(self, key):
+        bkey = msgpack.packb(key)
+        with self.env.begin(write=False, buffers=True) as txn:
+            bhashes = txn.get(bkey, db=self.keys_db)
+            return bhashes is not None
 
     # override
     def remove(self, key):
