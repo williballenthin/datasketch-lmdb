@@ -116,7 +116,7 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
                 H = self._H(minhash.hashvalues[start:end])
                 bkeys = txn.get(H, db=hashtable_db)
                 if bkeys is not None:
-                    keys = msgpack.unpackb(bkeys)
+                    keys = msgpack.unpackb(bkeys, use_list=False)
                     for key in keys: 
                         candidates.add(key)
 
