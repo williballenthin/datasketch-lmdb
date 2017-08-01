@@ -45,7 +45,7 @@ class LMDBMinHashLSH(datasketch.MinHashLSH):
         self.hashranges  # expected nop, constructed by parent.
 
         db_count = self.b + 1  # b * hashtable_dbs + 1 * key_db
-        self.env = lmdb.open(path, max_dbs=db_count)
+        self.env = lmdb.open(path, max_dbs=db_count, writemap=True)
 
         # database 0.
         # mutable.
